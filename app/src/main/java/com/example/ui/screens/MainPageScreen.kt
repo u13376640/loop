@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Message
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -187,7 +188,11 @@ fun MainPageScreen(
                             mediaPlaybackRequiresUserGesture = false
                         }
 
-                    defaultUserAgent = settings.userAgentString
+                        val cookieManager = CookieManager.getInstance()
+                        cookieManager.setAcceptCookie(true)
+                        cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                        defaultUserAgent = settings.userAgentString
 
                     webViewClient = object : WebViewClient() {
                         override fun shouldInterceptRequest(

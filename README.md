@@ -45,9 +45,13 @@
   - When a password is active, opening the app prompts for the password on the dedicated `AppLockScreen`.
   - Settings allows changing the password, removing protection (requires verification of the current password), or locking the app on demand.
 
-### 5. Engine Preferences
+### 5. Engine Preferences & Cookie Backup / Transfer
 - **JavaScript Toggle**: Can be enabled or disabled based on preference.
 - **Desktop View Mode**: Switches the WebView User-Agent to desktop Chrome for desktop site layouts.
+- **Browser Cookies & Sessions (Export / Import)**:
+  - **Formats**: Supports both **JSON** (Cookie-Editor / EditThisCookie compatible) and **Netscape `cookies.txt`** (curl / Get cookies.txt LOCALLY compatible) so you can migrate active logins (e.g., Google Account, Blogger) between Loop and desktop/other browsers.
+  - **Transfer Methods**: Zero-permission Android Storage Access Framework (`CreateDocument` / `OpenDocument`) file save/load **and** clipboard copy/paste with live format detection.
+  - **Session Handling**: Every import prompts you to choose **Merge** (keep existing sessions and add/update imported cookies) or **Replace** (clear all existing cookies before importing).
 - **Clear Cache & Cookies**: Fully wipes local storage, WebSQL, and cookie jars.
 
 ---
@@ -70,15 +74,16 @@ app/
 │   │   └── LoopCircleLogo.kt    # Minimalist vector canvas logo with glow & orbital dot
 │   ├── screens/
 │   │   ├── MainPageScreen.kt    # Fullscreen WebView + PullToRefreshBox + AdBlocker
-│   │   ├── SettingsScreen.kt    # Settings, stealth lock trigger, password & engine controls
+│   │   ├── SettingsScreen.kt    # Settings, stealth lock trigger, cookie export/import, password & engine controls
 │   │   └── AppLockScreen.kt     # Secure fullscreen lock screen prompt
 │   ├── theme/
 │   │   ├── Color.kt             # Dark slate and cyan/indigo theme palette
 │   │   └── Theme.kt             # Material 3 dark/light color schemes
 │   └── viewmodel/
-│       └── LoopViewModel.kt     # UI state management, coroutine operations, WebView actions
+│       └── LoopViewModel.kt     # UI state management, coroutine operations, cookie transfer & WebView actions
 └── util/
-    └── AdBlocker.kt             # AdGuard DoH DNS engine, domain matcher & cosmetic CSS
+    ├── AdBlocker.kt             # AdGuard DoH DNS engine, domain matcher & cosmetic CSS
+    └── CookieTransferManager.kt # JSON & Netscape cookies.txt serializer, parser & WebView CookieManager bridge
 ```
 
 ---

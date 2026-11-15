@@ -9,6 +9,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.db.AppDatabase
 import com.example.data.repository.LoopRepository
+import com.example.util.CookieExportResult
+import com.example.util.CookieFormat
+import com.example.util.CookieImportMode
+import com.example.util.CookieTransferManager
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -18,6 +22,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.Collections
 
 sealed interface WebViewAction {
     object GoBack : WebViewAction
@@ -101,6 +106,11 @@ class LoopViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _snackbarMessage = MutableSharedFlow<String>(extraBufferCapacity = 1)
     val snackbarMessage: SharedFlow<String> = _snackbarMessage.asSharedFlow()
+
+    // Tracked visited URLs for comprehensive cookie discovery across sites
+    private val visitedUrls: MutableSet<String> = Collections.synchronizedSet(
+        linkedSetOf(LoopRepository.DEFAULT_URL)
+    )
 
     // Fullscreen video Custom View state
     private val _fullscreenCustomView = MutableStateFlow<View?>(null)
@@ -276,8 +286,64 @@ class LoopViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun showSnackbar(message: String) {
+        _snackbarMessage.tryEmit(message)
+    }
+
+    fun exportCookies(
+        format: CookieFormat,
+        onReady: (CookieExportResult) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val trackedSnapshot = synchronized(visitedUrls) {
+                    (visitedUrls + activeUrl.value + _currentLoadedUrl.value).toList()
+                }
+                val result = CookieTransferManager.exportCookies(
+                    context = getApplication(),
+                    format = format,
+                    trackedUrls = trackedSnapshot
+                )
+                onReady(result)
+            } catch (e: Exception) {
+                onError(e.localizedMessage ?: "Failed to export cookies")
+            }
+        }
+    }
+
+    fun importCookies(
+        rawText: String,
+        mode: CookieImportMode,
+        onSuccess: (Int) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val preview = CookieTransferManager.parseCookies(rawText)
+            if (preview.error != null || preview.cookies.isEmpty()) {
+                onError(preview.error ?: "No valid cookies found to import")
+                return@launch
+            }
+            try {
+                val importedCount = CookieTransferManager.importCookies(
+                    cookies = preview.cookies,
+                    mode = mode
+                )
+                _hasError.value = false
+                _errorMessage.value = null
+                _webViewActions.tryEmit(WebViewAction.Reload)
+                val actionLabel = if (mode == CookieImportMode.REPLACE) "Replaced with" else "Merged"
+                _snackbarMessage.tryEmit("$actionLabel $importedCount cookies across ${preview.domainCount} domains")
+                onSuccess(importedCount)
+            } catch (e: Exception) {
+                onError(e.localizedMessage ?: "Failed to import cookies")
+            }
+        }
+    }
+
     // Callbacks from WebView
     fun onPageStarted(url: String) {
+        visitedUrls.add(url)
         _currentLoadedUrl.value = url
         _isLoading.value = true
         _hasError.value = false
@@ -285,6 +351,7 @@ class LoopViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onPageFinished(url: String) {
+        visitedUrls.add(url)
         _currentLoadedUrl.value = url
         _isLoading.value = false
         _loadingProgress.value = 100

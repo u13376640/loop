@@ -1,8 +1,13 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,17 +16,23 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Launch
 import androidx.compose.material.icons.filled.Lock
@@ -31,6 +42,7 @@ import androidx.compose.material.icons.filled.Password
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -38,7 +50,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -46,6 +60,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -53,9 +68,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,16 +80,26 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.repository.LoopRepository
 import com.example.ui.components.LoopCircleLogo
 import com.example.ui.viewmodel.LoopViewModel
+import com.example.util.CookieExportResult
+import com.example.util.CookieFormat
+import com.example.util.CookieImportMode
+import com.example.util.CookieTransferManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +111,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val focusManager = LocalFocusManager.current
+    val coroutineScope = rememberCoroutineScope()
 
     val activeUrl by viewModel.activeUrl.collectAsStateWithLifecycle()
     val isJsEnabled by viewModel.isJsEnabled.collectAsStateWithLifecycle()
@@ -103,6 +131,71 @@ fun SettingsScreen(
     var showCreatePasswordDialog by remember { mutableStateOf(false) }
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showRemovePasswordDialog by remember { mutableStateOf(false) }
+
+    // Cookie Export & Import States
+    var showExportCookiesDialog by remember { mutableStateOf(false) }
+    var exportFormat by remember { mutableStateOf(CookieFormat.JSON) }
+    var isExportingCookies by remember { mutableStateOf(false) }
+    var exportResult by remember { mutableStateOf<CookieExportResult?>(null) }
+    var exportError by remember { mutableStateOf<String?>(null) }
+
+    var showImportCookiesDialog by remember { mutableStateOf(false) }
+    var importRawText by remember { mutableStateOf("") }
+    var selectedImportMode by remember { mutableStateOf<CookieImportMode?>(null) }
+    var isImportingCookies by remember { mutableStateOf(false) }
+    var importError by remember { mutableStateOf<String?>(null) }
+
+    // Zero-permission Storage Access Framework launchers for cookie files
+    val handleExportUri: (Uri?) -> Unit = { uri ->
+        val payload = exportResult?.serializedText
+        val cookieCount = exportResult?.cookies?.size ?: 0
+        if (uri != null && !payload.isNullOrEmpty()) {
+            coroutineScope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { stream ->
+                            stream.write(payload.toByteArray(Charsets.UTF_8))
+                            stream.flush()
+                        } ?: throw IllegalStateException("Unable to open destination file")
+                    }
+                    viewModel.showSnackbar("Saved $cookieCount cookies to file")
+                    showExportCookiesDialog = false
+                } catch (e: Exception) {
+                    exportError = e.localizedMessage ?: "Failed to save cookie file"
+                }
+            }
+        }
+    }
+
+    val createJsonCookieFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json"),
+        onResult = handleExportUri
+    )
+
+    val createTxtCookieFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/plain"),
+        onResult = handleExportUri
+    )
+
+    val openCookieFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            coroutineScope.launch {
+                try {
+                    val fileContent = withContext(Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                            stream.bufferedReader(Charsets.UTF_8).readText()
+                        } ?: throw IllegalStateException("Unable to read selected file")
+                    }
+                    importRawText = fileContent
+                    importError = null
+                } catch (e: Exception) {
+                    importError = e.localizedMessage ?: "Failed to read cookie file"
+                }
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -640,11 +733,81 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                         )
 
+                        // Browser Cookie Export & Import
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Browser Cookies & Sessions",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "Export or import signed-in accounts (e.g., Google) via JSON or cookies.txt.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        exportError = null
+                                        exportResult = null
+                                        showExportCookiesDialog = true
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                        .testTag("export_cookies_button"),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Upload,
+                                        contentDescription = "Export Cookies",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Export", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        importRawText = ""
+                                        selectedImportMode = null
+                                        importError = null
+                                        isImportingCookies = false
+                                        showImportCookiesDialog = true
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp)
+                                        .testTag("import_cookies_button"),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Download,
+                                        contentDescription = "Import Cookies",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Import", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 12.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+
                         // Clear Cache
                         OutlinedButton(
                             onClick = { showClearCacheDialog = true },
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .heightIn(min = 48.dp)
                                 .testTag("clear_cache_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
@@ -981,6 +1144,483 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showClearCacheDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Dialog 5: Export Browser Cookies
+    if (showExportCookiesDialog) {
+        LaunchedEffect(showExportCookiesDialog, exportFormat) {
+            isExportingCookies = true
+            exportError = null
+            viewModel.exportCookies(
+                format = exportFormat,
+                onReady = { result ->
+                    exportResult = result
+                    isExportingCookies = false
+                },
+                onError = { err ->
+                    exportError = err
+                    isExportingCookies = false
+                }
+            )
+        }
+
+        AlertDialog(
+            onDismissRequest = { showExportCookiesDialog = false },
+            title = { Text("Export Browser Cookies") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Choose export format:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = exportFormat == CookieFormat.JSON,
+                            onClick = { exportFormat = CookieFormat.JSON },
+                            label = { Text("JSON") },
+                            modifier = Modifier.testTag("export_format_json")
+                        )
+                        FilterChip(
+                            selected = exportFormat == CookieFormat.NETSCAPE,
+                            onClick = { exportFormat = CookieFormat.NETSCAPE },
+                            label = { Text("cookies.txt") },
+                            modifier = Modifier.testTag("export_format_netscape")
+                        )
+                    }
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Security notice: Exported cookies contain active login sessions. Keep files and copied text private.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+
+                    when {
+                        isExportingCookies -> {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 16.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text("Reading browser cookies...", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+
+                        exportError != null -> {
+                            Text(
+                                text = exportError ?: "Export error",
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+
+                        exportResult != null -> {
+                            val result = exportResult!!
+                            if (result.cookies.isEmpty()) {
+                                Text(
+                                    text = "No cookies found yet. Browse or sign into a website on the Main Page first.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Text(
+                                    text = "${result.cookies.size} cookies across ${result.domainCount} domains",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+
+                                val previewSnippet = remember(result.serializedText) {
+                                    if (result.serializedText.length > 2500) {
+                                        result.serializedText.take(2500) + "\n... (truncated preview)"
+                                    } else {
+                                        result.serializedText
+                                    }
+                                }
+
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 80.dp, max = 140.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(10.dp)
+                                    ) {
+                                        Text(
+                                            text = previewSnippet,
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontFamily = FontFamily.Monospace
+                                            ),
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (!isExportingCookies && exportResult != null && exportResult!!.cookies.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    val result = exportResult ?: return@OutlinedButton
+                                    clipboardManager.setText(AnnotatedString(result.serializedText))
+                                    viewModel.showSnackbar(
+                                        "Copied ${result.cookies.size} cookies (${exportFormat.label})"
+                                    )
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("export_copy_button"),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copy Cookies",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Copy", maxLines = 1)
+                            }
+
+                            Button(
+                                onClick = {
+                                    when (exportFormat) {
+                                        CookieFormat.JSON -> createJsonCookieFileLauncher.launch("loop-cookies.json")
+                                        CookieFormat.NETSCAPE -> createTxtCookieFileLauncher.launch("loop-cookies.txt")
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                                    .testTag("export_save_file_button"),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Save Cookie File",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Save File", maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showExportCookiesDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    // Dialog 6: Import Browser Cookies (asks Merge vs Replace every time)
+    if (showImportCookiesDialog) {
+        val importPreview = remember(importRawText) {
+            CookieTransferManager.parseCookies(importRawText)
+        }
+
+        AlertDialog(
+            onDismissRequest = { if (!isImportingCookies) showImportCookiesDialog = false },
+            title = { Text("Import Browser Cookies") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                openCookieFileLauncher.launch(
+                                    arrayOf("application/json", "text/plain", "*/*")
+                                )
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("import_choose_file_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen,
+                                contentDescription = "Choose Cookie File",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Choose File", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val clipText = clipboardManager.getText()?.text
+                                if (!clipText.isNullOrBlank()) {
+                                    importRawText = clipText
+                                    importError = null
+                                } else {
+                                    importError = "Clipboard is empty"
+                                }
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .testTag("import_paste_button"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentPaste,
+                                contentDescription = "Paste Cookie Data",
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Paste", maxLines = 1)
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = importRawText,
+                        onValueChange = {
+                            importRawText = it
+                            importError = null
+                        },
+                        label = { Text("JSON or cookies.txt") },
+                        placeholder = { Text("Paste exported JSON array or Netscape cookies.txt...") },
+                        minLines = 3,
+                        maxLines = 5,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace
+                        ),
+                        trailingIcon = {
+                            if (importRawText.isNotEmpty()) {
+                                IconButton(onClick = {
+                                    importRawText = ""
+                                    importError = null
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Clear,
+                                        contentDescription = "Clear Cookie Text"
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("import_cookies_input")
+                    )
+
+                    if (importRawText.isNotBlank()) {
+                        if (importPreview.error != null) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = importPreview.error,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
+                        } else if (importPreview.cookies.isNotEmpty()) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Detected ${importPreview.detectedFormat?.label ?: "cookies"} • ${importPreview.cookies.size} cookies across ${importPreview.domainCount} domains",
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                    modifier = Modifier.padding(8.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = "How should existing sessions be handled?",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    // Merge option
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (selectedImportMode == CookieImportMode.MERGE) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant
+                            }
+                        ),
+                        color = if (selectedImportMode == CookieImportMode.MERGE) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clickable { selectedImportMode = CookieImportMode.MERGE }
+                            .testTag("import_mode_merge")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = selectedImportMode == CookieImportMode.MERGE,
+                                onClick = { selectedImportMode = CookieImportMode.MERGE }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Merge with existing",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                                Text(
+                                    text = "Keep current sessions and add/update imported cookies.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Replace option
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (selectedImportMode == CookieImportMode.REPLACE) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant
+                            }
+                        ),
+                        color = if (selectedImportMode == CookieImportMode.REPLACE) {
+                            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                            .clickable { selectedImportMode = CookieImportMode.REPLACE }
+                            .testTag("import_mode_replace")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = selectedImportMode == CookieImportMode.REPLACE,
+                                onClick = { selectedImportMode = CookieImportMode.REPLACE }
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Replace all existing",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                                Text(
+                                    text = "Clear all current browser cookies before importing.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    if (importError != null) {
+                        Text(
+                            text = importError ?: "",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                val chosenMode = selectedImportMode
+                Button(
+                    onClick = {
+                        if (chosenMode == null) return@Button
+                        isImportingCookies = true
+                        importError = null
+                        viewModel.importCookies(
+                            rawText = importRawText,
+                            mode = chosenMode,
+                            onSuccess = {
+                                isImportingCookies = false
+                                showImportCookiesDialog = false
+                            },
+                            onError = { err ->
+                                isImportingCookies = false
+                                importError = err
+                            }
+                        )
+                    },
+                    enabled = importPreview.error == null &&
+                        importPreview.cookies.isNotEmpty() &&
+                        chosenMode != null &&
+                        !isImportingCookies,
+                    modifier = Modifier.testTag("confirm_import_cookies_button")
+                ) {
+                    if (isImportingCookies) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text("Import")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showImportCookiesDialog = false },
+                    enabled = !isImportingCookies
+                ) {
                     Text("Cancel")
                 }
             }
